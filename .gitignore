@@ -10,3 +10,4 @@ wandb/
 *.pt
 *.npy
 *.npz
+EXPERIMENT_CONFIG_LOG.local.md
