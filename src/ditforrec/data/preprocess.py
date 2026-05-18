@@ -54,7 +54,7 @@ def _build_metadata_text(meta: dict) -> str:
 
 def _first_image_path(meta: dict) -> str | None:
     candidates = []
-    for key in ("image_path", "imageURLHighRes", "imageURL"):
+    for key in ("image_path", "imageURLHighRes", "imageURL", "imUrl"):
         value = meta.get(key)
         if isinstance(value, list):
             candidates.extend(value)
@@ -200,12 +200,21 @@ def preprocess_dataset(
     item_metadata_records = []
     text_inputs = [""]
     image_inputs = [None]
+    image_candidate_count = 0
+    image_downloaded_count = 0
+    image_missing_count = 0
     for asin, item_id in sorted(item_to_id.items(), key=lambda x: x[1]):
         meta = metadata.get(asin, {"asin": asin})
         text = _build_metadata_text(meta)
         image_path = _first_image_path(meta)
+        if image_path:
+            image_candidate_count += 1
         if image_path and image_path.startswith(("http://", "https://")):
             image_path = _download_image_if_needed(image_path, image_cache_root)
+        if image_path and Path(image_path).exists():
+            image_downloaded_count += 1
+        else:
+            image_missing_count += 1
         item_metadata_records.append(
             {
                 "item_id": item_id,
@@ -231,6 +240,9 @@ def preprocess_dataset(
         "num_train": len(train_records),
         "num_val": len(val_records),
         "num_test": len(test_records),
+        "image_candidate_count": image_candidate_count,
+        "image_downloaded_count": image_downloaded_count,
+        "image_missing_count": image_missing_count,
     }
 
     if extract_text:
@@ -266,6 +278,10 @@ def preprocess_dataset(
             manifest["image_feature_dim"] = 768
 
     write_json(manifest, feature_root / "feature_manifest.json")
+    print(
+        f"preprocess done: items={len(item_to_id)} image_candidates={image_candidate_count} "
+        f"downloaded_images={image_downloaded_count} missing_images={image_missing_count}"
+    )
     return processed_root
 
 
