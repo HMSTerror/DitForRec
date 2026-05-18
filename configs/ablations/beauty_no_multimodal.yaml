@@ -1,0 +1,55 @@
+seed: 2026
+experiment_name: beauty_no_multimodal
+data:
+  root: data
+  dataset: beauty
+  max_history: 50
+  batch_size: 128
+  num_workers: 4
+  candidate_strategy: full
+model:
+  hidden_dim: 128
+  num_heads: 4
+  depth: 4
+  mlp_ratio: 4.0
+  dropout: 0.1
+  max_history: 50
+  num_diffusion_steps: 50
+  text_dim: 512
+  image_dim: 768
+  use_text_condition: false
+  use_image_condition: false
+  use_history_correction: true
+  use_final_correction: true
+  text_inject_layers: []
+  image_inject_layers: []
+  timestep_dim: 128
+  use_user_embeddings: true
+training:
+  device: cuda
+  epochs: 30
+  lr: 0.0004
+  weight_decay: 0.00001
+  grad_clip_norm: 1.0
+  denoise_weight: 1.0
+  target_recon_weight: 0.5
+  prior_weight: 0.0001
+  ce_weight: 1.0
+  eval_every_epochs: 1
+  early_stop_patience: 5
+  logit_temperature: 0.7
+evaluation:
+  topk: [5, 10, 20]
+  valid_metric: NDCG@10
+  valid_metric_bigger: true
+sampling:
+  strategy: ddim
+  inference_steps: 20
+  eta: 0.0
+  noise_history: true
+logging:
+  log_every_steps: 100
+  save_train_history: true
+ablation:
+  name: no_multimodal
+  description: Disable text and image conditioning while keeping diffusion and correction active.

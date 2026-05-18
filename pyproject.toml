@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ditforrec"
+version = "0.1.0"
+description = "DiT-style multimodal diffusion recommender for Amazon Beauty/Toys 2014."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "OpenAI Codex" }]
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

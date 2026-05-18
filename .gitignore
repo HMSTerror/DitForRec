@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+data/
+outputs/
+wandb/
+*.pt
+*.npy
+*.npz
