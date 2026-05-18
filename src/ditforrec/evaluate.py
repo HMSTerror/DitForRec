@@ -44,6 +44,17 @@ def _resolve_sampling_config(config) -> tuple[int | None, str, float, bool]:
     )
 
 
+def _seed_evaluation_if_needed(config) -> None:
+    evaluation_cfg = config.get("evaluation", {})
+    eval_seed = evaluation_cfg.get("seed")
+    if eval_seed is None:
+        return
+    eval_seed = int(eval_seed)
+    torch.manual_seed(eval_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(eval_seed)
+
+
 def mask_history_items(logits: torch.Tensor, history_items: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     masked_logits = logits.clone()
     for row in range(history_items.shape[0]):
@@ -63,6 +74,7 @@ def evaluate_model(model: DitForRec, data_loader: DataLoader, device: torch.devi
         for k in topk
     }
     inference_steps, sampling_strategy, eta, noise_history = _resolve_sampling_config(config)
+    _seed_evaluation_if_needed(config)
 
     with torch.no_grad():
         for batch in data_loader:
