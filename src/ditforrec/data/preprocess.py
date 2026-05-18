@@ -240,16 +240,22 @@ def preprocess_dataset(
 
         text_features = encode_text_features(text_inputs, text_backbone)
         np.save(feature_root / "item_text.npy", text_features.astype(np.float32))
+        manifest["text_feature_dim"] = int(text_features.shape[1]) if text_features.ndim == 2 else 0
     if extract_image:
         from ditforrec.data.features import encode_image_features
 
         image_features = encode_image_features(image_inputs, image_backbone)
         np.save(feature_root / "item_image.npy", image_features.astype(np.float32))
+        manifest["image_feature_dim"] = int(image_features.shape[1]) if image_features.ndim == 2 else 0
 
     if not extract_text:
-        np.save(feature_root / "item_text.npy", np.zeros((len(item_to_id) + 1, 512), dtype=np.float32))
+        text_features = np.zeros((len(item_to_id) + 1, 512), dtype=np.float32)
+        np.save(feature_root / "item_text.npy", text_features)
+        manifest["text_feature_dim"] = 512
     if not extract_image:
-        np.save(feature_root / "item_image.npy", np.zeros((len(item_to_id) + 1, 768), dtype=np.float32))
+        image_features = np.zeros((len(item_to_id) + 1, 768), dtype=np.float32)
+        np.save(feature_root / "item_image.npy", image_features)
+        manifest["image_feature_dim"] = 768
 
     write_json(manifest, feature_root / "feature_manifest.json")
     return processed_root

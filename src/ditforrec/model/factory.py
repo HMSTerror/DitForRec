@@ -7,6 +7,8 @@ from ditforrec.model.ditforrec import DitForRec
 def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
     model_cfg = config.model
     training_cfg = config.training
+    text_dim = int(getattr(dataset.item_text, "shape", [0, model_cfg.text_dim])[1]) if dataset.item_text.ndim == 2 else int(model_cfg.text_dim)
+    image_dim = int(getattr(dataset.item_image, "shape", [0, model_cfg.image_dim])[1]) if dataset.item_image.ndim == 2 else int(model_cfg.image_dim)
     return DitForRec(
         num_items=dataset.num_items,
         num_users=dataset.num_users,
@@ -17,8 +19,8 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         dropout=model_cfg.dropout,
         max_history=model_cfg.max_history,
         num_diffusion_steps=model_cfg.num_diffusion_steps,
-        text_dim=model_cfg.text_dim,
-        image_dim=model_cfg.image_dim,
+        text_dim=text_dim,
+        image_dim=image_dim,
         text_inject_layers=list(model_cfg.get("text_inject_layers", [])),
         image_inject_layers=list(model_cfg.get("image_inject_layers", [])),
         timestep_dim=model_cfg.timestep_dim,
