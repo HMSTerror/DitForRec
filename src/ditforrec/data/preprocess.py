@@ -61,8 +61,6 @@ def _first_image_path(meta: dict) -> str | None:
         elif isinstance(value, str):
             candidates.append(value)
     for candidate in candidates:
-        if candidate and candidate.startswith(("http://", "https://")):
-            return None
         if candidate:
             return candidate
     return None
@@ -249,13 +247,23 @@ def preprocess_dataset(
         manifest["image_feature_dim"] = int(image_features.shape[1]) if image_features.ndim == 2 else 0
 
     if not extract_text:
-        text_features = np.zeros((len(item_to_id) + 1, 512), dtype=np.float32)
-        np.save(feature_root / "item_text.npy", text_features)
-        manifest["text_feature_dim"] = 512
+        existing_text_path = feature_root / "item_text.npy"
+        if existing_text_path.exists():
+            existing_text = np.load(existing_text_path)
+            manifest["text_feature_dim"] = int(existing_text.shape[1]) if existing_text.ndim == 2 else 0
+        else:
+            text_features = np.zeros((len(item_to_id) + 1, 512), dtype=np.float32)
+            np.save(existing_text_path, text_features)
+            manifest["text_feature_dim"] = 512
     if not extract_image:
-        image_features = np.zeros((len(item_to_id) + 1, 768), dtype=np.float32)
-        np.save(feature_root / "item_image.npy", image_features)
-        manifest["image_feature_dim"] = 768
+        existing_image_path = feature_root / "item_image.npy"
+        if existing_image_path.exists():
+            existing_image = np.load(existing_image_path)
+            manifest["image_feature_dim"] = int(existing_image.shape[1]) if existing_image.ndim == 2 else 0
+        else:
+            image_features = np.zeros((len(item_to_id) + 1, 768), dtype=np.float32)
+            np.save(existing_image_path, image_features)
+            manifest["image_feature_dim"] = 768
 
     write_json(manifest, feature_root / "feature_manifest.json")
     return processed_root
