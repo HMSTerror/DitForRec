@@ -26,6 +26,7 @@ class DitForRecOutput:
     prior_loss: torch.Tensor
     ce_loss: torch.Tensor
     direct_ce_loss: torch.Tensor
+    sasrec_ce_loss: torch.Tensor
     logits: torch.Tensor
     pred_target: torch.Tensor
 
@@ -117,6 +118,9 @@ class DitForRec(nn.Module):
         ce_weight: float = 1.0,
         direct_ce_weight: float = 0.0,
         direct_score_weight: float = 0.0,
+        sasrec_ce_weight: float = 0.0,
+        sasrec_score_weight: float = 0.0,
+        sasrec_num_layers: int = 2,
         logit_temperature: float = 1.0,
     ) -> None:
         super().__init__()
@@ -131,6 +135,8 @@ class DitForRec(nn.Module):
         self.ce_weight = ce_weight
         self.direct_ce_weight = direct_ce_weight
         self.direct_score_weight = min(max(direct_score_weight, 0.0), 1.0)
+        self.sasrec_ce_weight = sasrec_ce_weight
+        self.sasrec_score_weight = min(max(sasrec_score_weight, 0.0), 1.0)
         self.logit_temperature = max(logit_temperature, 1e-6)
         self.use_text_condition = use_text_condition
         self.use_image_condition = use_image_condition
@@ -139,8 +145,20 @@ class DitForRec(nn.Module):
         self.item_embeddings = nn.Embedding(num_items, hidden_dim, padding_idx=0)
         self.user_embeddings = nn.Embedding(num_users, hidden_dim, padding_idx=0) if use_user_embeddings else None
         self.position_embeddings = nn.Parameter(torch.randn(1, max_history + 1, hidden_dim) * 0.02)
+        self.sasrec_position_embeddings = nn.Parameter(torch.randn(1, max_history, hidden_dim) * 0.02)
         self.direct_query = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
         self.input_dropout = nn.Dropout(dropout)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=int(hidden_dim * mlp_ratio),
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.sasrec_encoder = nn.TransformerEncoder(encoder_layer, num_layers=sasrec_num_layers)
+        self.sasrec_norm = nn.LayerNorm(hidden_dim)
 
         self.text_projector = nn.Linear(text_dim, hidden_dim) if use_text_condition else None
         self.image_projector = nn.Linear(image_dim, hidden_dim) if use_image_condition else None
@@ -239,6 +257,21 @@ class DitForRec(nn.Module):
         logits[:, 0] = -1e9
         return logits
 
+    def sasrec_score_logits(self, user_id: torch.Tensor, history: torch.Tensor, history_mask: torch.Tensor) -> torch.Tensor:
+        x = self.item_embeddings(history)
+        if self.user_embeddings is not None:
+            non_padding = history.ne(0).unsqueeze(-1).to(x.dtype)
+            x = (x + self.user_embeddings(user_id).unsqueeze(1)) * non_padding
+        x = self.input_dropout(x + self.sasrec_position_embeddings[:, : history.shape[1], :])
+        encoded = self.sasrec_encoder(x, src_key_padding_mask=history_mask == 0)
+        encoded = self.sasrec_norm(encoded)
+
+        # Histories are left padded, so the rightmost token is the latest interaction.
+        last_repr = encoded[:, -1, :]
+        logits = self.compute_logits(last_repr)
+        logits[:, 0] = -1e9
+        return logits
+
     @staticmethod
     def _masked_mse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         expanded_mask = mask.unsqueeze(-1).to(prediction.dtype)
@@ -278,6 +311,7 @@ class DitForRec(nn.Module):
         logits = self.compute_logits(pred_target)
         logits[:, 0] = -1e9
         direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
+        sasrec_logits = self.sasrec_score_logits(user_id, history, history_mask)
 
         token_mask = torch.cat([history_mask, torch.ones_like(history_mask[:, :1])], dim=1)
         denoise_loss = self._masked_mse(pred_clean, clean_tokens, token_mask)
@@ -285,12 +319,14 @@ class DitForRec(nn.Module):
         prior_loss = self.scheduler.prior_matching_loss(clean_tokens)
         ce_loss = F.cross_entropy(logits, target)
         direct_ce_loss = F.cross_entropy(direct_logits, target)
+        sasrec_ce_loss = F.cross_entropy(sasrec_logits, target)
         loss = (
             self.denoise_weight * denoise_loss
             + self.target_recon_weight * target_recon_loss
             + self.prior_weight * prior_loss
             + self.ce_weight * ce_loss
             + self.direct_ce_weight * direct_ce_loss
+            + self.sasrec_ce_weight * sasrec_ce_loss
         )
 
         return DitForRecOutput(
@@ -300,6 +336,7 @@ class DitForRec(nn.Module):
             prior_loss=prior_loss,
             ce_loss=ce_loss,
             direct_ce_loss=direct_ce_loss,
+            sasrec_ce_loss=sasrec_ce_loss,
             logits=logits,
             pred_target=pred_target,
         )
@@ -318,7 +355,14 @@ class DitForRec(nn.Module):
         noise_history: bool = True,
     ) -> torch.Tensor:
         if self.direct_score_weight >= 1.0:
-            return self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
+            direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
+            if self.sasrec_score_weight > 0.0:
+                sasrec_logits = self.sasrec_score_logits(user_id, history, history_mask)
+                return (1.0 - self.sasrec_score_weight) * direct_logits + self.sasrec_score_weight * sasrec_logits
+            return direct_logits
+
+        if self.sasrec_score_weight >= 1.0:
+            return self.sasrec_score_logits(user_id, history, history_mask)
 
         device = history.device
         schedule = self._build_sampling_schedule(inference_steps)
@@ -352,5 +396,9 @@ class DitForRec(nn.Module):
         if self.direct_score_weight > 0.0:
             direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
             logits = (1.0 - self.direct_score_weight) * logits + self.direct_score_weight * direct_logits
+            logits[:, 0] = -1e9
+        if self.sasrec_score_weight > 0.0:
+            sasrec_logits = self.sasrec_score_logits(user_id, history, history_mask)
+            logits = (1.0 - self.sasrec_score_weight) * logits + self.sasrec_score_weight * sasrec_logits
             logits[:, 0] = -1e9
         return logits
