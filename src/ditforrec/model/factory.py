@@ -38,8 +38,5 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         ce_weight=float(training_cfg.get("ce_weight", 1.0)),
         direct_ce_weight=float(training_cfg.get("direct_ce_weight", 0.0)),
         direct_score_weight=float(training_cfg.get("direct_score_weight", 0.0)),
-        sasrec_ce_weight=float(training_cfg.get("sasrec_ce_weight", 0.0)),
-        sasrec_score_weight=float(training_cfg.get("sasrec_score_weight", 0.0)),
-        sasrec_num_layers=int(model_cfg.get("sasrec_num_layers", 2)),
         logit_temperature=float(training_cfg.get("logit_temperature", 1.0)),
     )
