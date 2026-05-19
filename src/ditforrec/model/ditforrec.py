@@ -25,6 +25,7 @@ class DitForRecOutput:
     target_recon_loss: torch.Tensor
     prior_loss: torch.Tensor
     ce_loss: torch.Tensor
+    direct_ce_loss: torch.Tensor
     logits: torch.Tensor
     pred_target: torch.Tensor
 
@@ -107,6 +108,8 @@ class DitForRec(nn.Module):
         target_recon_weight: float = 0.5,
         prior_weight: float = 1e-4,
         ce_weight: float = 1.0,
+        direct_ce_weight: float = 0.0,
+        direct_score_weight: float = 0.0,
         logit_temperature: float = 1.0,
     ) -> None:
         super().__init__()
@@ -119,6 +122,8 @@ class DitForRec(nn.Module):
         self.target_recon_weight = target_recon_weight
         self.prior_weight = prior_weight
         self.ce_weight = ce_weight
+        self.direct_ce_weight = direct_ce_weight
+        self.direct_score_weight = min(max(direct_score_weight, 0.0), 1.0)
         self.logit_temperature = max(logit_temperature, 1e-6)
         self.use_text_condition = use_text_condition
         self.use_image_condition = use_image_condition
@@ -127,6 +132,7 @@ class DitForRec(nn.Module):
         self.item_embeddings = nn.Embedding(num_items, hidden_dim, padding_idx=0)
         self.user_embeddings = nn.Embedding(num_users, hidden_dim, padding_idx=0) if use_user_embeddings else None
         self.position_embeddings = nn.Parameter(torch.randn(1, max_history + 1, hidden_dim) * 0.02)
+        self.direct_query = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
         self.input_dropout = nn.Dropout(dropout)
 
         self.text_projector = nn.Linear(text_dim, hidden_dim) if use_text_condition else None
@@ -205,6 +211,25 @@ class DitForRec(nn.Module):
         normalized_items = F.normalize(self.item_embeddings.weight, dim=-1)
         return (normalized_target @ normalized_items.transpose(0, 1)) / self.logit_temperature
 
+    def direct_score_logits(
+        self,
+        user_id: torch.Tensor,
+        history: torch.Tensor,
+        history_mask: torch.Tensor,
+        text_cond: torch.Tensor,
+        image_cond: torch.Tensor,
+    ) -> torch.Tensor:
+        clean_history = self.build_history_tokens(user_id, history)
+        query = self.direct_query.expand(history.shape[0], -1, -1)
+        if self.user_embeddings is not None:
+            query = query + self.user_embeddings(user_id).unsqueeze(1)
+        tokens = torch.cat([clean_history, query], dim=1)
+        timesteps = torch.zeros(history.shape[0], device=history.device, dtype=torch.long)
+        predicted = self.denoise(tokens, history_mask, text_cond, image_cond, timesteps, clean_history)
+        logits = self.compute_logits(predicted[:, -1, :])
+        logits[:, 0] = -1e9
+        return logits
+
     @staticmethod
     def _masked_mse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         expanded_mask = mask.unsqueeze(-1).to(prediction.dtype)
@@ -243,17 +268,20 @@ class DitForRec(nn.Module):
 
         logits = self.compute_logits(pred_target)
         logits[:, 0] = -1e9
+        direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
 
         token_mask = torch.cat([history_mask, torch.ones_like(history_mask[:, :1])], dim=1)
         denoise_loss = self._masked_mse(pred_clean, clean_tokens, token_mask)
         target_recon_loss = F.mse_loss(pred_target, gold_target)
         prior_loss = self.scheduler.prior_matching_loss(clean_tokens)
         ce_loss = F.cross_entropy(logits, target)
+        direct_ce_loss = F.cross_entropy(direct_logits, target)
         loss = (
             self.denoise_weight * denoise_loss
             + self.target_recon_weight * target_recon_loss
             + self.prior_weight * prior_loss
             + self.ce_weight * ce_loss
+            + self.direct_ce_weight * direct_ce_loss
         )
 
         return DitForRecOutput(
@@ -262,6 +290,7 @@ class DitForRec(nn.Module):
             target_recon_loss=target_recon_loss,
             prior_loss=prior_loss,
             ce_loss=ce_loss,
+            direct_ce_loss=direct_ce_loss,
             logits=logits,
             pred_target=pred_target,
         )
@@ -279,6 +308,9 @@ class DitForRec(nn.Module):
         eta: float = 0.0,
         noise_history: bool = True,
     ) -> torch.Tensor:
+        if self.direct_score_weight >= 1.0:
+            return self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
+
         device = history.device
         schedule = self._build_sampling_schedule(inference_steps)
 
@@ -308,4 +340,8 @@ class DitForRec(nn.Module):
 
         logits = self.compute_logits(current_target[:, 0, :])
         logits[:, 0] = -1e9
+        if self.direct_score_weight > 0.0:
+            direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
+            logits = (1.0 - self.direct_score_weight) * logits + self.direct_score_weight * direct_logits
+            logits[:, 0] = -1e9
         return logits

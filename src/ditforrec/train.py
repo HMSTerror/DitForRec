@@ -86,6 +86,7 @@ def train(config_path: str) -> None:
         target_recon_loss_total = 0.0
         prior_loss_total = 0.0
         ce_loss_total = 0.0
+        direct_ce_loss_total = 0.0
 
         for step, batch in enumerate(train_loader, start=1):
             batch = {key: value.to(device) for key, value in batch.items()}
@@ -100,10 +101,11 @@ def train(config_path: str) -> None:
             target_recon_loss_total += outputs.target_recon_loss.item()
             prior_loss_total += outputs.prior_loss.item()
             ce_loss_total += outputs.ce_loss.item()
+            direct_ce_loss_total += outputs.direct_ce_loss.item()
 
             if step % log_every_steps == 0 or step == len(train_loader):
                 logger.info(
-                    "epoch %d training [%d/%d] loss=%.4f, denoise=%.4f, target_recon=%.4f, prior=%.4f, ce=%.4f",
+                    "epoch %d training [%d/%d] loss=%.4f, denoise=%.4f, target_recon=%.4f, prior=%.4f, ce=%.4f, direct_ce=%.4f",
                     epoch,
                     step,
                     len(train_loader),
@@ -112,6 +114,7 @@ def train(config_path: str) -> None:
                     target_recon_loss_total / step,
                     prior_loss_total / step,
                     ce_loss_total / step,
+                    direct_ce_loss_total / step,
                 )
 
         num_train_steps = max(len(train_loader), 1)
@@ -121,6 +124,7 @@ def train(config_path: str) -> None:
             "target_recon_loss": target_recon_loss_total / num_train_steps,
             "prior_loss": prior_loss_total / num_train_steps,
             "ce_loss": ce_loss_total / num_train_steps,
+            "direct_ce_loss": direct_ce_loss_total / num_train_steps,
         }
         epoch_time = time.time() - epoch_start
         logger.info("epoch %d finished [time: %.2fs, train: %s]", epoch, epoch_time, flatten_metrics(train_metrics))
