@@ -56,6 +56,7 @@ class DCDiTBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        token_mask: torch.Tensor,
         timestep_emb: torch.Tensor,
         clean_history: torch.Tensor,
         history_mask: torch.Tensor,
@@ -64,7 +65,13 @@ class DCDiTBlock(nn.Module):
     ) -> torch.Tensor:
         history_context = masked_mean(clean_history, history_mask)
         conditioned = self.cond_ln(x, timestep_emb, history_context)
-        self_attended, _ = self.self_attn(conditioned, conditioned, conditioned, need_weights=False)
+        self_attended, _ = self.self_attn(
+            conditioned,
+            conditioned,
+            conditioned,
+            key_padding_mask=token_mask == 0,
+            need_weights=False,
+        )
         x = x + self_attended
         x = self.post_attn_norm(x)
 
@@ -167,7 +174,8 @@ class DitForRec(nn.Module):
     def build_history_tokens(self, user_ids: torch.Tensor, history: torch.Tensor) -> torch.Tensor:
         history_emb = self.item_embeddings(history)
         if self.user_embeddings is not None:
-            history_emb = history_emb + self.user_embeddings(user_ids).unsqueeze(1)
+            non_padding = history.ne(0).unsqueeze(-1).to(history_emb.dtype)
+            history_emb = (history_emb + self.user_embeddings(user_ids).unsqueeze(1)) * non_padding
         return history_emb
 
     def build_target_tokens(self, user_ids: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -196,9 +204,10 @@ class DitForRec(nn.Module):
 
         projected_text = self.text_projector(text_cond) if self.text_projector is not None else None
         projected_image = self.image_projector(image_cond) if self.image_projector is not None else None
+        token_mask = torch.cat([history_mask, torch.ones_like(history_mask[:, :1])], dim=1)
 
         for block in self.blocks:
-            x = block(x, timestep_emb, clean_history, history_mask, projected_text, projected_image)
+            x = block(x, token_mask, timestep_emb, clean_history, history_mask, projected_text, projected_image)
 
         x = self.final_norm(x)
         if self.final_correction is not None:
