@@ -31,7 +31,10 @@ model:
 training:
   device: cuda
   epochs: 100
-  lr: 0.0001
+  lr: 0.0002
+  lr_schedule: warmup_cosine
+  warmup_epochs: 3
+  min_lr_ratio: 0.05
   weight_decay: 0.00005
   grad_clip_norm: 1.0
   denoise_weight: 0.1

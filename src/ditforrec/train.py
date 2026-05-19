@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import time
 from pathlib import Path
 
 import torch
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 from ditforrec.config import load_config
@@ -22,6 +24,38 @@ def _resolve_topk(config) -> list[int]:
     if "topk" in evaluation_cfg:
         return list(evaluation_cfg["topk"])
     return list(config.training.get("topk", [10]))
+
+
+def _build_lr_scheduler(optimizer: AdamW, config, steps_per_epoch: int) -> LambdaLR | None:
+    schedule = str(config.training.get("lr_schedule", "constant")).lower()
+    if schedule in {"", "none", "constant"}:
+        return None
+
+    total_steps = max(int(config.training.epochs) * max(steps_per_epoch, 1), 1)
+    warmup_epochs = float(config.training.get("warmup_epochs", 0.0))
+    warmup_steps = int(config.training.get("warmup_steps", round(warmup_epochs * max(steps_per_epoch, 1))))
+    min_lr_ratio = float(config.training.get("min_lr_ratio", 0.05))
+    min_lr_ratio = min(max(min_lr_ratio, 0.0), 1.0)
+
+    def lr_lambda(current_step: int) -> float:
+        step = current_step + 1
+        if warmup_steps > 0 and step <= warmup_steps:
+            return step / warmup_steps
+
+        if schedule == "warmup_cosine":
+            decay_steps = max(total_steps - warmup_steps, 1)
+            decay_progress = min(max((step - warmup_steps) / decay_steps, 0.0), 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+        if schedule == "cosine":
+            decay_progress = min(max(step / total_steps, 0.0), 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+        raise ValueError(f"Unsupported lr_schedule: {schedule}")
+
+    return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
 def train(config_path: str) -> None:
@@ -58,12 +92,22 @@ def train(config_path: str) -> None:
     device = torch.device(config.training.device if torch.cuda.is_available() or config.training.device == "cpu" else "cpu")
     model = build_model(config, train_dataset).to(device)
     optimizer = AdamW(model.parameters(), lr=config.training.lr, weight_decay=config.training.weight_decay)
+    lr_scheduler = _build_lr_scheduler(optimizer, config, steps_per_epoch=len(train_loader))
 
     output_root = ensure_dir(Path("outputs") / config.experiment_name)
     shutil.copy2(config_path, output_root / "config_snapshot.yaml")
     logger = create_logger(output_root / "train.log", f"ditforrec.train.{config.experiment_name}")
     logger.info("Experiment: %s", config.experiment_name)
     logger.info("Device: %s", device)
+    if lr_scheduler is not None:
+        logger.info(
+            "LR schedule: %s [base_lr=%.6g, warmup_epochs=%s, warmup_steps=%s, min_lr_ratio=%s]",
+            config.training.get("lr_schedule", "constant"),
+            config.training.lr,
+            config.training.get("warmup_epochs", 0),
+            config.training.get("warmup_steps", "auto"),
+            config.training.get("min_lr_ratio", 0.05),
+        )
 
     topk = _resolve_topk(config)
     valid_metric_name = str(config.get("evaluation", {}).get("valid_metric", "NDCG@10"))
@@ -95,6 +139,8 @@ def train(config_path: str) -> None:
             outputs.loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.grad_clip_norm)
             optimizer.step()
+            if lr_scheduler is not None:
+                lr_scheduler.step()
 
             total_loss += outputs.loss.item()
             denoise_loss_total += outputs.denoise_loss.item()
@@ -105,10 +151,11 @@ def train(config_path: str) -> None:
 
             if step % log_every_steps == 0 or step == len(train_loader):
                 logger.info(
-                    "epoch %d training [%d/%d] loss=%.4f, denoise=%.4f, target_recon=%.4f, prior=%.4f, ce=%.4f, direct_ce=%.4f",
+                    "epoch %d training [%d/%d] lr=%.6g, loss=%.4f, denoise=%.4f, target_recon=%.4f, prior=%.4f, ce=%.4f, direct_ce=%.4f",
                     epoch,
                     step,
                     len(train_loader),
+                    optimizer.param_groups[0]["lr"],
                     total_loss / step,
                     denoise_loss_total / step,
                     target_recon_loss_total / step,
@@ -119,6 +166,7 @@ def train(config_path: str) -> None:
 
         num_train_steps = max(len(train_loader), 1)
         train_metrics = {
+            "lr": optimizer.param_groups[0]["lr"],
             "loss": total_loss / num_train_steps,
             "denoise_loss": denoise_loss_total / num_train_steps,
             "target_recon_loss": target_recon_loss_total / num_train_steps,
