@@ -100,6 +100,9 @@ class DitForRec(nn.Module):
         use_image_condition: bool = True,
         use_history_correction: bool = True,
         use_final_correction: bool = True,
+        add_user_to_target: bool = True,
+        diffusion_beta_start: float = 1e-4,
+        diffusion_beta_end: float = 2e-2,
         denoise_weight: float = 1.0,
         target_recon_weight: float = 0.5,
         prior_weight: float = 1e-4,
@@ -120,6 +123,7 @@ class DitForRec(nn.Module):
         self.use_text_condition = use_text_condition
         self.use_image_condition = use_image_condition
         self.use_final_correction = use_final_correction
+        self.add_user_to_target = add_user_to_target
         self.item_embeddings = nn.Embedding(num_items, hidden_dim, padding_idx=0)
         self.user_embeddings = nn.Embedding(num_users, hidden_dim, padding_idx=0) if use_user_embeddings else None
         self.position_embeddings = nn.Parameter(torch.randn(1, max_history + 1, hidden_dim) * 0.02)
@@ -128,7 +132,11 @@ class DitForRec(nn.Module):
         self.text_projector = nn.Linear(text_dim, hidden_dim) if use_text_condition else None
         self.image_projector = nn.Linear(image_dim, hidden_dim) if use_image_condition else None
         self.timestep_embedder = SinusoidalTimeEmbedding(timestep_dim)
-        self.scheduler = GaussianDiffusionScheduler(num_steps=num_diffusion_steps)
+        self.scheduler = GaussianDiffusionScheduler(
+            num_steps=num_diffusion_steps,
+            beta_start=diffusion_beta_start,
+            beta_end=diffusion_beta_end,
+        )
 
         self.blocks = nn.ModuleList(
             [
@@ -158,7 +166,7 @@ class DitForRec(nn.Module):
 
     def build_target_tokens(self, user_ids: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         target_emb = self.item_embeddings(target).unsqueeze(1)
-        if self.user_embeddings is not None:
+        if self.user_embeddings is not None and self.add_user_to_target:
             target_emb = target_emb + self.user_embeddings(user_ids).unsqueeze(1)
         return target_emb
 
