@@ -117,6 +117,7 @@ class DitForRec(nn.Module):
         ce_weight: float = 1.0,
         direct_ce_weight: float = 0.0,
         direct_score_weight: float = 0.0,
+        label_smoothing: float = 0.0,
         logit_temperature: float = 1.0,
     ) -> None:
         super().__init__()
@@ -131,6 +132,7 @@ class DitForRec(nn.Module):
         self.ce_weight = ce_weight
         self.direct_ce_weight = direct_ce_weight
         self.direct_score_weight = min(max(direct_score_weight, 0.0), 1.0)
+        self.label_smoothing = min(max(label_smoothing, 0.0), 1.0)
         self.logit_temperature = max(logit_temperature, 1e-6)
         self.use_text_condition = use_text_condition
         self.use_image_condition = use_image_condition
@@ -283,8 +285,8 @@ class DitForRec(nn.Module):
         denoise_loss = self._masked_mse(pred_clean, clean_tokens, token_mask)
         target_recon_loss = F.mse_loss(pred_target, gold_target)
         prior_loss = self.scheduler.prior_matching_loss(clean_tokens)
-        ce_loss = F.cross_entropy(logits, target)
-        direct_ce_loss = F.cross_entropy(direct_logits, target)
+        ce_loss = F.cross_entropy(logits, target, label_smoothing=self.label_smoothing)
+        direct_ce_loss = F.cross_entropy(direct_logits, target, label_smoothing=self.label_smoothing)
         loss = (
             self.denoise_weight * denoise_loss
             + self.target_recon_weight * target_recon_loss
