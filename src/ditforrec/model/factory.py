@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import torch
+
 from ditforrec.data.dataset import SequentialRecommendationDataset
 from ditforrec.model.ditforrec import DitForRec
 
@@ -21,6 +23,8 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         num_diffusion_steps=model_cfg.num_diffusion_steps,
         text_dim=text_dim,
         image_dim=image_dim,
+        item_text_features=torch.from_numpy(dataset.item_text),
+        item_image_features=torch.from_numpy(dataset.item_image),
         text_inject_layers=list(model_cfg.get("text_inject_layers", [])),
         image_inject_layers=list(model_cfg.get("image_inject_layers", [])),
         timestep_dim=model_cfg.timestep_dim,
@@ -38,6 +42,10 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         ce_weight=float(training_cfg.get("ce_weight", 1.0)),
         direct_ce_weight=float(training_cfg.get("direct_ce_weight", 0.0)),
         direct_score_weight=float(training_cfg.get("direct_score_weight", 0.0)),
+        bpr_weight=float(training_cfg.get("bpr_weight", 0.0)),
+        bpr_num_negatives=int(training_cfg.get("bpr_num_negatives", 0)),
+        item_text_weight=float(training_cfg.get("item_text_weight", 0.0)),
+        item_image_weight=float(training_cfg.get("item_image_weight", 0.0)),
         label_smoothing=float(training_cfg.get("label_smoothing", 0.0)),
         logit_temperature=float(training_cfg.get("logit_temperature", 1.0)),
     )

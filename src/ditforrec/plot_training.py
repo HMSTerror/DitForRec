@@ -57,7 +57,7 @@ def plot_training_curves(output_dir: str | Path, save_path: str | Path | None = 
         _plot_group(
             axes[0, 1],
             records,
-            ["ce_loss", "direct_ce_loss"],
+            ["ce_loss", "direct_ce_loss", "bpr_loss"],
             "Ranking Losses",
             "cross entropy",
         ),

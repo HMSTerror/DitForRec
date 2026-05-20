@@ -26,6 +26,7 @@ class DitForRecOutput:
     prior_loss: torch.Tensor
     ce_loss: torch.Tensor
     direct_ce_loss: torch.Tensor
+    bpr_loss: torch.Tensor
     logits: torch.Tensor
     pred_target: torch.Tensor
 
@@ -100,6 +101,8 @@ class DitForRec(nn.Module):
         num_diffusion_steps: int = 50,
         text_dim: int = 512,
         image_dim: int = 768,
+        item_text_features: torch.Tensor | None = None,
+        item_image_features: torch.Tensor | None = None,
         text_inject_layers: list[int] | None = None,
         image_inject_layers: list[int] | None = None,
         timestep_dim: int = 128,
@@ -117,6 +120,10 @@ class DitForRec(nn.Module):
         ce_weight: float = 1.0,
         direct_ce_weight: float = 0.0,
         direct_score_weight: float = 0.0,
+        bpr_weight: float = 0.0,
+        bpr_num_negatives: int = 0,
+        item_text_weight: float = 0.0,
+        item_image_weight: float = 0.0,
         label_smoothing: float = 0.0,
         logit_temperature: float = 1.0,
     ) -> None:
@@ -132,6 +139,10 @@ class DitForRec(nn.Module):
         self.ce_weight = ce_weight
         self.direct_ce_weight = direct_ce_weight
         self.direct_score_weight = min(max(direct_score_weight, 0.0), 1.0)
+        self.bpr_weight = bpr_weight
+        self.bpr_num_negatives = max(int(bpr_num_negatives), 0)
+        self.item_text_weight = max(float(item_text_weight), 0.0)
+        self.item_image_weight = max(float(item_image_weight), 0.0)
         self.label_smoothing = min(max(label_smoothing, 0.0), 1.0)
         self.logit_temperature = max(logit_temperature, 1e-6)
         self.use_text_condition = use_text_condition
@@ -146,6 +157,14 @@ class DitForRec(nn.Module):
 
         self.text_projector = nn.Linear(text_dim, hidden_dim) if use_text_condition else None
         self.image_projector = nn.Linear(image_dim, hidden_dim) if use_image_condition else None
+        if item_text_features is not None:
+            self.register_buffer("item_text_features", item_text_features.float(), persistent=False)
+        else:
+            self.item_text_features = None
+        if item_image_features is not None:
+            self.register_buffer("item_image_features", item_image_features.float(), persistent=False)
+        else:
+            self.item_image_features = None
         self.timestep_embedder = SinusoidalTimeEmbedding(timestep_dim)
         self.scheduler = GaussianDiffusionScheduler(
             num_steps=num_diffusion_steps,
@@ -219,8 +238,24 @@ class DitForRec(nn.Module):
 
     def compute_logits(self, target_repr: torch.Tensor) -> torch.Tensor:
         normalized_target = F.normalize(target_repr, dim=-1)
-        normalized_items = F.normalize(self.item_embeddings.weight, dim=-1)
+        normalized_items = F.normalize(self.build_candidate_item_tokens(), dim=-1)
         return (normalized_target @ normalized_items.transpose(0, 1)) / self.logit_temperature
+
+    def build_candidate_item_tokens(self) -> torch.Tensor:
+        item_tokens = self.item_embeddings.weight
+        if (
+            self.item_text_weight > 0.0
+            and self.text_projector is not None
+            and self.item_text_features is not None
+        ):
+            item_tokens = item_tokens + self.item_text_weight * self.text_projector(self.item_text_features)
+        if (
+            self.item_image_weight > 0.0
+            and self.image_projector is not None
+            and self.item_image_features is not None
+        ):
+            item_tokens = item_tokens + self.item_image_weight * self.image_projector(self.item_image_features)
+        return item_tokens
 
     def direct_score_logits(
         self,
@@ -251,6 +286,26 @@ class DitForRec(nn.Module):
         # Exclude padding item 0 before label smoothing, otherwise smoothed mass
         # assigned to its -inf logit can dominate the objective.
         return F.cross_entropy(logits[:, 1:], target - 1, label_smoothing=self.label_smoothing)
+
+    def _sampled_bpr_loss(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if self.bpr_num_negatives <= 0:
+            return logits.new_zeros(())
+
+        batch_size = target.shape[0]
+        negatives = torch.randint(
+            1,
+            self.item_embeddings.num_embeddings,
+            (batch_size, self.bpr_num_negatives),
+            device=target.device,
+        )
+        negatives = torch.where(
+            negatives == target.unsqueeze(1),
+            (negatives % (self.item_embeddings.num_embeddings - 1)) + 1,
+            negatives,
+        )
+        positive_scores = logits.gather(1, target.unsqueeze(1))
+        negative_scores = logits.gather(1, negatives)
+        return F.softplus(negative_scores - positive_scores).mean()
 
     def _build_sampling_schedule(self, inference_steps: int | None) -> list[int]:
         total_steps = self.scheduler.num_steps
@@ -292,12 +347,14 @@ class DitForRec(nn.Module):
         prior_loss = self.scheduler.prior_matching_loss(clean_tokens)
         ce_loss = self._item_cross_entropy(logits, target)
         direct_ce_loss = self._item_cross_entropy(direct_logits, target)
+        bpr_loss = self._sampled_bpr_loss(direct_logits, target)
         loss = (
             self.denoise_weight * denoise_loss
             + self.target_recon_weight * target_recon_loss
             + self.prior_weight * prior_loss
             + self.ce_weight * ce_loss
             + self.direct_ce_weight * direct_ce_loss
+            + self.bpr_weight * bpr_loss
         )
 
         return DitForRecOutput(
@@ -307,6 +364,7 @@ class DitForRec(nn.Module):
             prior_loss=prior_loss,
             ce_loss=ce_loss,
             direct_ce_loss=direct_ce_loss,
+            bpr_loss=bpr_loss,
             logits=logits,
             pred_target=pred_target,
         )
