@@ -247,6 +247,11 @@ class DitForRec(nn.Module):
         squared_error = ((prediction - target) ** 2) * expanded_mask
         return squared_error.sum() / expanded_mask.sum().clamp(min=1.0)
 
+    def _item_cross_entropy(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # Exclude padding item 0 before label smoothing, otherwise smoothed mass
+        # assigned to its -inf logit can dominate the objective.
+        return F.cross_entropy(logits[:, 1:], target - 1, label_smoothing=self.label_smoothing)
+
     def _build_sampling_schedule(self, inference_steps: int | None) -> list[int]:
         total_steps = self.scheduler.num_steps
         if inference_steps is None or inference_steps >= total_steps:
@@ -285,8 +290,8 @@ class DitForRec(nn.Module):
         denoise_loss = self._masked_mse(pred_clean, clean_tokens, token_mask)
         target_recon_loss = F.mse_loss(pred_target, gold_target)
         prior_loss = self.scheduler.prior_matching_loss(clean_tokens)
-        ce_loss = F.cross_entropy(logits, target, label_smoothing=self.label_smoothing)
-        direct_ce_loss = F.cross_entropy(direct_logits, target, label_smoothing=self.label_smoothing)
+        ce_loss = self._item_cross_entropy(logits, target)
+        direct_ce_loss = self._item_cross_entropy(direct_logits, target)
         loss = (
             self.denoise_weight * denoise_loss
             + self.target_recon_weight * target_recon_loss
