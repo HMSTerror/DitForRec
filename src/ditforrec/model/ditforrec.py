@@ -103,6 +103,7 @@ class DitForRec(nn.Module):
         image_dim: int = 768,
         item_text_features: torch.Tensor | None = None,
         item_image_features: torch.Tensor | None = None,
+        item_semantic_ids: torch.Tensor | None = None,
         text_inject_layers: list[int] | None = None,
         image_inject_layers: list[int] | None = None,
         timestep_dim: int = 128,
@@ -124,6 +125,8 @@ class DitForRec(nn.Module):
         bpr_num_negatives: int = 0,
         item_text_weight: float = 0.0,
         item_image_weight: float = 0.0,
+        semantic_id_weight: float = 0.0,
+        semantic_codebook_size: int = 256,
         use_candidate_embeddings_for_diffusion: bool = False,
         label_smoothing: float = 0.0,
         logit_temperature: float = 1.0,
@@ -144,6 +147,7 @@ class DitForRec(nn.Module):
         self.bpr_num_negatives = max(int(bpr_num_negatives), 0)
         self.item_text_weight = max(float(item_text_weight), 0.0)
         self.item_image_weight = max(float(item_image_weight), 0.0)
+        self.semantic_id_weight = max(float(semantic_id_weight), 0.0)
         self.use_candidate_embeddings_for_diffusion = bool(use_candidate_embeddings_for_diffusion)
         self.label_smoothing = min(max(label_smoothing, 0.0), 1.0)
         self.logit_temperature = max(logit_temperature, 1e-6)
@@ -167,6 +171,18 @@ class DitForRec(nn.Module):
             self.register_buffer("item_image_features", item_image_features.float(), persistent=False)
         else:
             self.item_image_features = None
+        if item_semantic_ids is not None:
+            semantic_ids = item_semantic_ids.long()
+            self.register_buffer("item_semantic_ids", semantic_ids, persistent=False)
+            semantic_code_len = semantic_ids.shape[1]
+            max_code = int(semantic_ids.max().item()) if semantic_ids.numel() > 0 else 0
+            semantic_vocab_size = max(int(semantic_codebook_size) + 1, max_code + 1)
+            self.semantic_code_embeddings = nn.ModuleList(
+                [nn.Embedding(semantic_vocab_size, hidden_dim, padding_idx=0) for _ in range(semantic_code_len)]
+            )
+        else:
+            self.item_semantic_ids = None
+            self.semantic_code_embeddings = None
         self.timestep_embedder = SinusoidalTimeEmbedding(timestep_dim)
         self.scheduler = GaussianDiffusionScheduler(
             num_steps=num_diffusion_steps,
@@ -250,6 +266,17 @@ class DitForRec(nn.Module):
 
     def build_candidate_item_tokens(self) -> torch.Tensor:
         item_tokens = self.item_embeddings.weight
+        if (
+            self.semantic_id_weight > 0.0
+            and self.item_semantic_ids is not None
+            and self.semantic_code_embeddings is not None
+        ):
+            semantic_tokens = item_tokens.new_zeros(item_tokens.shape)
+            semantic_ids = self.item_semantic_ids.to(item_tokens.device)
+            for code_index, embedding in enumerate(self.semantic_code_embeddings):
+                semantic_tokens = semantic_tokens + embedding(semantic_ids[:, code_index])
+            semantic_tokens = semantic_tokens / max(len(self.semantic_code_embeddings), 1)
+            item_tokens = item_tokens + self.semantic_id_weight * semantic_tokens
         if (
             self.item_text_weight > 0.0
             and self.text_projector is not None

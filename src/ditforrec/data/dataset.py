@@ -18,6 +18,8 @@ class SequentialRecommendationDataset(Dataset):
         self.mappings = read_json(self.root / "mappings.json")
         self.item_text = np.load(self.root / "features" / "item_text.npy")
         self.item_image = np.load(self.root / "features" / "item_image.npy")
+        semantic_id_path = self.root / "features" / "item_semantic_ids.npy"
+        self.item_semantic_ids = np.load(semantic_id_path) if semantic_id_path.exists() else None
 
         self.num_users = len(self.mappings["user_to_id"]) + 1
         self.num_items = len(self.mappings["item_to_id"]) + 1

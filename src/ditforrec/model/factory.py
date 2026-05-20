@@ -11,6 +11,7 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
     training_cfg = config.training
     text_dim = int(getattr(dataset.item_text, "shape", [0, model_cfg.text_dim])[1]) if dataset.item_text.ndim == 2 else int(model_cfg.text_dim)
     image_dim = int(getattr(dataset.item_image, "shape", [0, model_cfg.image_dim])[1]) if dataset.item_image.ndim == 2 else int(model_cfg.image_dim)
+    item_semantic_ids = dataset.item_semantic_ids
     return DitForRec(
         num_items=dataset.num_items,
         num_users=dataset.num_users,
@@ -25,6 +26,7 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         image_dim=image_dim,
         item_text_features=torch.from_numpy(dataset.item_text),
         item_image_features=torch.from_numpy(dataset.item_image),
+        item_semantic_ids=torch.from_numpy(item_semantic_ids) if item_semantic_ids is not None else None,
         text_inject_layers=list(model_cfg.get("text_inject_layers", [])),
         image_inject_layers=list(model_cfg.get("image_inject_layers", [])),
         timestep_dim=model_cfg.timestep_dim,
@@ -46,6 +48,8 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         bpr_num_negatives=int(training_cfg.get("bpr_num_negatives", 0)),
         item_text_weight=float(training_cfg.get("item_text_weight", 0.0)),
         item_image_weight=float(training_cfg.get("item_image_weight", 0.0)),
+        semantic_id_weight=float(training_cfg.get("semantic_id_weight", 0.0)),
+        semantic_codebook_size=int(training_cfg.get("semantic_codebook_size", 256)),
         use_candidate_embeddings_for_diffusion=bool(training_cfg.get("use_candidate_embeddings_for_diffusion", False)),
         label_smoothing=float(training_cfg.get("label_smoothing", 0.0)),
         logit_temperature=float(training_cfg.get("logit_temperature", 1.0)),
