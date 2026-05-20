@@ -46,6 +46,7 @@ def build_model(config, dataset: SequentialRecommendationDataset) -> DitForRec:
         bpr_num_negatives=int(training_cfg.get("bpr_num_negatives", 0)),
         item_text_weight=float(training_cfg.get("item_text_weight", 0.0)),
         item_image_weight=float(training_cfg.get("item_image_weight", 0.0)),
+        use_candidate_embeddings_for_diffusion=bool(training_cfg.get("use_candidate_embeddings_for_diffusion", False)),
         label_smoothing=float(training_cfg.get("label_smoothing", 0.0)),
         logit_temperature=float(training_cfg.get("logit_temperature", 1.0)),
     )

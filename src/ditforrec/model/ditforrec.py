@@ -124,6 +124,7 @@ class DitForRec(nn.Module):
         bpr_num_negatives: int = 0,
         item_text_weight: float = 0.0,
         item_image_weight: float = 0.0,
+        use_candidate_embeddings_for_diffusion: bool = False,
         label_smoothing: float = 0.0,
         logit_temperature: float = 1.0,
     ) -> None:
@@ -143,6 +144,7 @@ class DitForRec(nn.Module):
         self.bpr_num_negatives = max(int(bpr_num_negatives), 0)
         self.item_text_weight = max(float(item_text_weight), 0.0)
         self.item_image_weight = max(float(item_image_weight), 0.0)
+        self.use_candidate_embeddings_for_diffusion = bool(use_candidate_embeddings_for_diffusion)
         self.label_smoothing = min(max(label_smoothing, 0.0), 1.0)
         self.logit_temperature = max(logit_temperature, 1e-6)
         self.use_text_condition = use_text_condition
@@ -194,13 +196,18 @@ class DitForRec(nn.Module):
 
     def build_history_tokens(self, user_ids: torch.Tensor, history: torch.Tensor) -> torch.Tensor:
         history_emb = self.item_embeddings(history)
+        if self.use_candidate_embeddings_for_diffusion:
+            history_emb = self.build_candidate_item_tokens()[history]
         if self.user_embeddings is not None:
             non_padding = history.ne(0).unsqueeze(-1).to(history_emb.dtype)
             history_emb = (history_emb + self.user_embeddings(user_ids).unsqueeze(1)) * non_padding
         return history_emb
 
     def build_target_tokens(self, user_ids: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        target_emb = self.item_embeddings(target).unsqueeze(1)
+        if self.use_candidate_embeddings_for_diffusion:
+            target_emb = self.build_candidate_item_tokens()[target].unsqueeze(1)
+        else:
+            target_emb = self.item_embeddings(target).unsqueeze(1)
         if self.user_embeddings is not None and self.add_user_to_target:
             target_emb = target_emb + self.user_embeddings(user_ids).unsqueeze(1)
         return target_emb
@@ -255,6 +262,9 @@ class DitForRec(nn.Module):
             and self.item_image_features is not None
         ):
             item_tokens = item_tokens + self.item_image_weight * self.image_projector(self.item_image_features)
+        non_padding = torch.ones(item_tokens.shape[0], 1, device=item_tokens.device, dtype=item_tokens.dtype)
+        non_padding[0] = 0.0
+        item_tokens = item_tokens * non_padding
         return item_tokens
 
     def direct_score_logits(
@@ -339,15 +349,19 @@ class DitForRec(nn.Module):
 
         logits = self.compute_logits(pred_target)
         logits[:, 0] = -1e9
-        direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
 
         token_mask = torch.cat([history_mask, torch.ones_like(history_mask[:, :1])], dim=1)
         denoise_loss = self._masked_mse(pred_clean, clean_tokens, token_mask)
         target_recon_loss = F.mse_loss(pred_target, gold_target)
         prior_loss = self.scheduler.prior_matching_loss(clean_tokens)
         ce_loss = self._item_cross_entropy(logits, target)
-        direct_ce_loss = self._item_cross_entropy(direct_logits, target)
-        bpr_loss = self._sampled_bpr_loss(direct_logits, target)
+        if self.direct_ce_weight > 0.0 or self.bpr_weight > 0.0:
+            direct_logits = self.direct_score_logits(user_id, history, history_mask, text_cond, image_cond)
+            direct_ce_loss = self._item_cross_entropy(direct_logits, target)
+            bpr_loss = self._sampled_bpr_loss(direct_logits, target)
+        else:
+            direct_ce_loss = logits.new_zeros(())
+            bpr_loss = logits.new_zeros(())
         loss = (
             self.denoise_weight * denoise_loss
             + self.target_recon_weight * target_recon_loss
