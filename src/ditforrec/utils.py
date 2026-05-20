@@ -37,7 +37,7 @@ def write_jsonl(records: Iterable[dict], path: str | Path) -> None:
 
 
 def read_jsonl(path: str | Path) -> list[dict]:
-    with Path(path).open("r", encoding="utf-8") as handle:
+    with Path(path).open("r", encoding="utf-8-sig") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 

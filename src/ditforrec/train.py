@@ -16,6 +16,7 @@ from ditforrec.config import load_config
 from ditforrec.data.dataset import SequentialRecommendationDataset, collate_batch
 from ditforrec.evaluate import evaluate_model, resolve_metric_value
 from ditforrec.model.factory import build_model
+from ditforrec.plot_training import plot_training_curves
 from ditforrec.utils import create_logger, ensure_dir, flatten_metrics, set_seed, write_jsonl
 
 
@@ -232,6 +233,12 @@ def train(config_path: str) -> None:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
     if config.get("logging", {}).get("save_train_history", True):
         write_jsonl(history_records, output_root / "train_history.jsonl")
+        if config.get("logging", {}).get("plot_training_curves", True):
+            try:
+                plot_path = plot_training_curves(output_root)
+                logger.info("Saved training curves to %s", plot_path)
+            except Exception as exc:
+                logger.warning("Failed to plot training curves: %s", exc)
 
     logger.info("Finished training. best epoch=%d, best valid score=%.6f", best_epoch, best_metric)
     if best_valid_metrics:
